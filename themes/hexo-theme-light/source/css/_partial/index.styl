@@ -1,0 +1,29 @@
+#page-nav
+  background #fff
+  text-align center
+  margin-bottom 50px
+  overflow hidden
+  font-size 14px
+  a, span
+    color color-meta
+    font-family font-title
+    display inline-block
+    padding 0.5em 1em
+  a
+    &:hover
+      background color-gray
+      color color-blue
+  .prev
+    float left
+  .next
+    float right
+  .page-number
+      display inline-block
+      @media screen and (max-width: 600px)
+        display none
+  .current
+    color color-blue
+    font-weight bold
+  .space
+    color color-meta
+    font-weight bold

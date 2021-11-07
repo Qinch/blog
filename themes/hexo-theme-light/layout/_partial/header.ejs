@@ -1,0 +1,36 @@
+<div class= "header-content">
+		<div class="header-div">
+		    <h1><a href="<%- config.root %>"><%= config.title %></a></h1>
+		    <h2><a>&nbsp;<% if (config.subtitle){ %><%= config.subtitle %><% } %></a></h2>
+		</div>
+	<div class="clearfix"></div>
+</div>
+
+<div class= "header-nav">
+	<div id="main-nav" class="alignleft">
+	    <% for (var i in theme.menu){ %>
+	      <a href="<%- theme.menu[i] %>"><%= i %></a>
+	    <% } %>
+	</div>
+	<div id="sub-nav" class="alignright">
+
+
+	<% if (theme.swift_search){ %>
+		<form class="search" action="/search/index.html" method="get" accept-charset="utf-8" >
+		<input type="text" id="search" style="width: 100px; height: 9px;" " class="st-default-search-input" maxlength="20" placeholder="Search" />
+		</form>
+	<% } %>
+　
+	</div>
+	<div class="clearfix"></div>
+<script type="text/javascript">
+  (function(w,d,t,u,n,s,e){w['SwiftypeObject']=n;w[n]=w[n]||function(){
+  (w[n].q=w[n].q||[]).push(arguments);};s=d.createElement(t);
+  e=d.getElementsByTagName(t)[0];s.async=1;s.src=u;e.parentNode.insertBefore(s,e);
+  })(window,document,'script','//s.swiftypecdn.com/install/v2/st.js','_st');
+
+  _st('install','F9-FFdkxc43TCEzy_894','2.0.0');
+</script>
+</div>
+
+

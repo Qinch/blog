@@ -1,0 +1,49 @@
+<article class="<%= item.layout %>">
+  <div class="post-content">
+    <header>
+      <% if (item.layout != 'page'){ %>
+	<%- partial('post/title') %> 
+	<%
+		var time='';
+		time='发表于 '+item.date.format(config.date_format)+' | 字数 ';
+	%>
+	<time  datetime="<%= item.date.toDate().toISOString() %>"><p><%- time %><%- partial('post/wordcount') %></p></time>
+      <% } %>
+    </header>
+    <div class="entry">
+      <% if (index){ %>
+		<% if (item.excerpt) { %>
+			<%- item.excerpt %>
+		<% } else { %>
+			<%- item.content %>
+		<% } %>
+	<%} else { %>
+		<%- partial('post/toc') %>  
+		<%- item.content %>
+	<% } %>
+    </div>
+    <footer>
+      <% if (index){ %>
+        <% if (item.excerpt){ %>
+          <div class="alignleft">
+            <a href="<%- config.root %><%- item.path %>#more" class="more-link"><%= __('excerpt_link') %></a>
+          </div>
+        <% } %>
+        <% if (item.comments && theme.duoshuo){ %>
+        <div class="alignright">
+          <a href="<%- config.root %><%- item.path %>#comment" class="comment-link"><%= __('comment_link') %></a>
+        </div>
+        <% } %>
+      <% } else { %>
+        <%- partial('post/category') %>
+        <%- partial('post/tag') %>
+	<% if (item.layout === 'page'){ %>
+		<time  datetime="<%= item.updated.toDate().toISOString() %>"><p><%= '更新于 '+item.updated.format(config.date_format) %></p></time>
+	<% } %>
+      <% } %>
+    
+      <div class="clearfix"></div>
+    </footer>
+  </div>
+</article>
+<%- partial('comment') %>

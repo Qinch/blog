@@ -1,0 +1,368 @@
+title: redis4.0_Transactions源码剖析
+category: redis 
+date: 2017-12-11
+tags: [redis4.0,multi,Transations,sourcecode]
+toc: false
+comments: false
+---
+#### 1.Transactions
+
+- MULTI, EXEC, DISCARD and WATCH are the foundation of transactions in Redis. They allow the execution of a group of commands in a single step, with two important guarantees:
+
+ - All the commands in a transaction are serialized and executed sequentially. It can never happen that a request issued by another client is served in the middle of the execution of a Redis transaction. This guarantees that the commands are executed as a single isolated operation(隔离性).
+
+ - Either all of the commands or none are processed, so a Redis transaction is also atomic(原子性). 
+
+- WATCH命令
+
+ - 在对应的db结构体中用dict保存WATCHed keys,其中dict的entry的key为WATCHed key robj,value为一个链表，链表的每个Node指向一个Client的指针（表示该client WATCHed该key）
+
+ - 在每个client结构体中用链表保存了该客户端WATCHed的key的robj，和该key对应的db指针
+
+<!--more-->
+
+#### 2.Transactions源码
+
+
+```bash
+
+/* ================================ MULTI/EXEC ============================== */
+
+/* Client state initialization for MULTI/EXEC */
+//初始化事务的命令队列
+void initClientMultiState(client *c) {
+    c->mstate.commands = NULL;
+    c->mstate.count = 0;
+}
+
+/* Release all the resources associated with MULTI/EXEC state */
+void freeClientMultiState(client *c) {
+    int j;
+
+    for (j = 0; j < c->mstate.count; j++) {
+        int i;
+        multiCmd *mc = c->mstate.commands+j;
+
+        for (i = 0; i < mc->argc; i++)
+            decrRefCount(mc->argv[i]);
+        zfree(mc->argv);
+    }
+    zfree(c->mstate.commands);
+}
+
+/* Add a new command into the MULTI commands queue */
+//将一个命令加入事物队列(数组)
+void queueMultiCommand(client *c) {
+    multiCmd *mc;
+    int j;
+
+    c->mstate.commands = zrealloc(c->mstate.commands,
+            sizeof(multiCmd)*(c->mstate.count+1));
+    mc = c->mstate.commands+c->mstate.count;
+    mc->cmd = c->cmd;
+    mc->argc = c->argc;
+    mc->argv = zmalloc(sizeof(robj*)*c->argc);
+    memcpy(mc->argv,c->argv,sizeof(robj*)*c->argc);
+	//对应的robj引用计数+1
+    for (j = 0; j < c->argc; j++)
+        incrRefCount(mc->argv[j]);
+    c->mstate.count++;
+}
+
+//discard事务状态
+void discardTransaction(client *c) {
+	//释放c指向的客户端的事物状态
+    freeClientMultiState(c);
+    initClientMultiState(c);
+    c->flags &= ~(CLIENT_MULTI|CLIENT_DIRTY_CAS|CLIENT_DIRTY_EXEC);
+	//把该客户端关注的key从dict删除
+    unwatchAllKeys(c);
+}
+
+/* Flag the transacation as DIRTY_EXEC so that EXEC will fail.
+ * Should be called every time there is an error while queueing a command. */
+//判断事物的状态，避免递归调用MULTI命令
+void flagTransaction(client *c) {
+    if (c->flags & CLIENT_MULTI)
+        c->flags |= CLIENT_DIRTY_EXEC;
+}
+
+
+//标记客户端处于事务状态
+void multiCommand(client *c) {
+    if (c->flags & CLIENT_MULTI) {
+        addReplyError(c,"MULTI calls can not be nested");
+        return;
+    }
+	//表示客户端从非事物状态切换到事物状态
+    c->flags |= CLIENT_MULTI;
+    addReply(c,shared.ok);
+}
+
+//discard(移除)事物
+void discardCommand(client *c) {
+    if (!(c->flags & CLIENT_MULTI)) {
+        addReplyError(c,"DISCARD without MULTI");
+        return;
+    }
+    discardTransaction(c);
+    addReply(c,shared.ok);
+}
+
+/* Send a MULTI command to all the slaves and AOF file. Check the execCommand
+ * implementation for more information. */
+void execCommandPropagateMulti(client *c) {
+    robj *multistring = createStringObject("MULTI",5);
+
+    propagate(server.multiCommand,c->db->id,&multistring,1,
+              PROPAGATE_AOF|PROPAGATE_REPL);
+    decrRefCount(multistring);
+}
+
+//执行事务
+void execCommand(client *c) {
+    int j;
+    robj **orig_argv;
+    int orig_argc;
+    struct redisCommand *orig_cmd;
+    int must_propagate = 0; /* Need to propagate MULTI/EXEC to AOF / slaves? */
+    int was_master = server.masterhost == NULL;
+
+	//client在非事务状态
+    if (!(c->flags & CLIENT_MULTI)) {
+        addReplyError(c,"EXEC without MULTI");
+        return;
+    }
+
+    /* Check if we need to abort the EXEC because:
+     * 1) Some WATCHed key was touched(watched key 被修改).
+     * 2) There was a previous error while queueing commands(入队错误).
+     * A failed EXEC in the first case returns a multi bulk nil object
+     * (technically it is not an error but a special behavior), while
+     * in the second an EXECABORT error is returned. */
+    if (c->flags & (CLIENT_DIRTY_CAS|CLIENT_DIRTY_EXEC)) {
+        addReply(c, c->flags & CLIENT_DIRTY_EXEC ? shared.execaborterr :
+                                                  shared.nullmultibulk);
+		//拒绝执行这个事务
+        discardTransaction(c);
+        goto handle_monitor;
+    }
+
+    /* Exec all the queued commands */
+	//ASAP is As Soon As Possible
+	//此时开始执行入队的命令，所以WATCHed key都清除
+    unwatchAllKeys(c); /* Unwatch ASAP otherwise we'll waste CPU cycles */
+    orig_argv = c->argv;
+    orig_argc = c->argc;
+    orig_cmd = c->cmd;
+    addReplyMultiBulkLen(c,c->mstate.count);
+    for (j = 0; j < c->mstate.count; j++) {
+        c->argc = c->mstate.commands[j].argc;
+        c->argv = c->mstate.commands[j].argv;
+        c->cmd = c->mstate.commands[j].cmd;
+
+        /* Propagate a MULTI request once we encounter the first command which
+         * is not readonly nor an administrative one.
+         * This way we'll deliver the MULTI/..../EXEC block as a whole and
+         * both the AOF and the replication link will have the same consistency
+         * and atomicity guarantees. */
+        if (!must_propagate && !(c->cmd->flags & (CMD_READONLY|CMD_ADMIN))) {
+            execCommandPropagateMulti(c);
+            must_propagate = 1;
+        }
+
+		//执行事务中的命令
+        call(c,CMD_CALL_FULL);
+
+        /* Commands may alter argc/argv, restore mstate. */
+        c->mstate.commands[j].argc = c->argc;
+        c->mstate.commands[j].argv = c->argv;
+        c->mstate.commands[j].cmd = c->cmd;
+    }
+    c->argv = orig_argv;
+    c->argc = orig_argc;
+    c->cmd = orig_cmd;
+    discardTransaction(c);
+
+    /* Make sure the EXEC command will be propagated as well if MULTI
+     * was already propagated. */
+    if (must_propagate) {
+        int is_master = server.masterhost == NULL;
+        server.dirty++;
+        /* If inside the MULTI/EXEC block this instance was suddenly
+         * switched from master to slave (using the SLAVEOF command), the
+         * initial MULTI was propagated into the replication backlog, but the
+         * rest was not. We need to make sure to at least terminate the
+         * backlog with the final EXEC. */
+        if (server.repl_backlog && was_master && !is_master) {
+            char *execcmd = "*1\r\n$4\r\nEXEC\r\n";
+            feedReplicationBacklog(execcmd,strlen(execcmd));
+        }
+    }
+
+handle_monitor:
+    /* Send EXEC to clients waiting data from MONITOR. We do it here
+     * since the natural order of commands execution is actually:
+     * MUTLI, EXEC, ... commands inside transaction ...
+     * Instead EXEC is flagged as CMD_SKIP_MONITOR in the command
+     * table, and we do it here with correct ordering. */
+    if (listLength(server.monitors) && !server.loading)
+        replicationFeedMonitors(c,server.monitors,c->db->id,c->argv,c->argc);
+}
+
+/* ===================== WATCH (CAS alike for MULTI/EXEC) ===================
+ *
+ * The implementation uses a per-DB hash table mapping keys to list of clients
+ * WATCHing those keys, so that given a key that is going to be modified
+ * we can mark all the associated clients as dirty.
+ *
+ * Also every client contains a list of WATCHed keys so that's possible to
+ * un-watch such keys when the client is freed or when UNWATCH is called. */
+
+/* In the client->watched_keys list we need to use watchedKey structures
+ * as in order to identify a key in Redis we need both the key name and the
+ * DB */
+typedef struct watchedKey {
+    robj *key;
+    redisDb *db;
+} watchedKey;
+
+/* Watch for the specified key */
+void watchForKey(client *c, robj *key) {
+    list *clients = NULL;
+    listIter li;
+    listNode *ln;
+    watchedKey *wk;
+
+    /* Check if we are already watching for this key */
+    listRewind(c->watched_keys,&li);
+    while((ln = listNext(&li))) {
+        wk = listNodeValue(ln);
+        if (wk->db == c->db && equalStringObjects(key,wk->key))
+            return; /* Key already watched */
+    }
+    /* This key is not already watched in this DB. Let's add it */
+    clients = dictFetchValue(c->db->watched_keys,key);
+	//在dict中创建该entry
+    if (!clients) {
+        clients = listCreate();
+        dictAdd(c->db->watched_keys,key,clients);
+        incrRefCount(key);
+    }
+	//添加到value对应的链表的尾节点
+    listAddNodeTail(clients,c);
+    /* Add the new key to the list of keys watched by this client */
+    wk = zmalloc(sizeof(*wk));
+    wk->key = key;
+    wk->db = c->db;
+    incrRefCount(key);
+	//添加到客户端的链表中
+    listAddNodeTail(c->watched_keys,wk);
+}
+
+/* Unwatch all the keys watched by this client. To clean the EXEC dirty
+ * flag is up to the caller. */
+//c的watched_keys链表的每个Node指向一个watchedKey
+void unwatchAllKeys(client *c) {
+    listIter li;
+    listNode *ln;
+
+	//当前客户端watched_keys链表为空
+    if (listLength(c->watched_keys) == 0) return;
+    listRewind(c->watched_keys,&li);
+    while((ln = listNext(&li))) {
+        list *clients;
+        watchedKey *wk;
+
+        /* Lookup the watched key -> clients list and remove the client
+         * from the list */
+        wk = listNodeValue(ln);
+		//dict中key对应的value为一个链表,链表的每个元素为c
+        clients = dictFetchValue(wk->db->watched_keys, wk->key);
+        serverAssertWithInfo(c,NULL,clients != NULL);
+		//删除watched_keys(dict)的value中的client节点
+        listDelNode(clients,listSearchKey(clients,c));
+        /* Kill the entry at all if this was the only client */
+		//如果该value为空（链表长度为0），则从dict删除该entry
+        if (listLength(clients) == 0)
+            dictDelete(wk->db->watched_keys, wk->key);
+        /* Remove this watched key from the client->watched list */
+		//从客户端的链表中删除该key
+        listDelNode(c->watched_keys,ln);
+        decrRefCount(wk->key);
+        zfree(wk);
+    }
+}
+
+/* "Touch" a key, so that if this key is being WATCHed by some client the
+ * next EXEC will fail. */
+//标记所有WATCHed这个key的客户端为dirty
+void touchWatchedKey(redisDb *db, robj *key) {
+    list *clients;
+    listIter li;
+    listNode *ln;
+
+    if (dictSize(db->watched_keys) == 0) return;
+    clients = dictFetchValue(db->watched_keys, key);
+    if (!clients) return;
+
+    /* Mark all the clients watching this key as CLIENT_DIRTY_CAS */
+    /* Check if we are already watching for this key */
+    listRewind(clients,&li);
+    while((ln = listNext(&li))) {
+        client *c = listNodeValue(ln);
+
+        c->flags |= CLIENT_DIRTY_CAS;
+    }
+}
+
+/* On FLUSHDB or FLUSHALL all the watched keys that are present before the
+ * flush but will be deleted as effect of the flushing operation should
+ * be touched. "dbid" is the DB that's getting the flush. -1 if it is
+ * a FLUSHALL operation (all the DBs flushed). */
+void touchWatchedKeysOnFlush(int dbid) {
+    listIter li1, li2;
+    listNode *ln;
+
+    /* For every client, check all the waited keys */
+    listRewind(server.clients,&li1);
+    while((ln = listNext(&li1))) {
+        client *c = listNodeValue(ln);
+        listRewind(c->watched_keys,&li2);
+        while((ln = listNext(&li2))) {
+            watchedKey *wk = listNodeValue(ln);
+
+            /* For every watched key matching the specified DB, if the
+             * key exists, mark the client as dirty, as the key will be
+             * removed. */
+            if (dbid == -1 || wk->db->id == dbid) {
+                if (dictFind(wk->db->dict, wk->key->ptr) != NULL)
+                    c->flags |= CLIENT_DIRTY_CAS;
+            }
+        }
+    }
+}
+
+void watchCommand(client *c) {
+    int j;
+
+	//不能在MULTI（客户端处于事务状态）执行WATCH命令
+    if (c->flags & CLIENT_MULTI) {
+        addReplyError(c,"WATCH inside MULTI is not allowed");
+        return;
+    }
+    for (j = 1; j < c->argc; j++)
+        watchForKey(c,c->argv[j]);
+    addReply(c,shared.ok);
+}
+
+void unwatchCommand(client *c) {
+    unwatchAllKeys(c);
+    c->flags &= (~CLIENT_DIRTY_CAS);
+    addReply(c,shared.ok);
+}
+```
+
+#### 3.参考文献
+[redis.io](https://redis.io/topics/transactions)
+[redis_reading](https://github.com/Qinch/redis_reading/tree/read/)

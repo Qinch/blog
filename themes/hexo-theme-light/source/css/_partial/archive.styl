@@ -1,0 +1,36 @@
+.archive-title
+  color color-meta
+  font-weight normal
+  margin-bottom 15px
+  text-shadow 0 0 1px #fff
+  &:before
+    font-family font-icon
+    content '\f073'
+    padding-right 15px
+
+  &.tag
+    &:before
+      content '\f02b'
+
+  &.category
+    &:before
+      content '\f07b'
+
+.archive
+  box-shadow 0px 0px 5px color-border
+  border-bottom 1px solid color-border
+  margin-bottom 50px
+  article
+    box-shadow none
+    .post-content
+      margin-bottom 0
+      padding-top: 8px;
+      padding-bottom: 6px;
+      padding-left: 30px;
+      .icon
+        left 4px
+  .post-content h1
+    font-size 1.5em
+    border-bottom 1px dashed #ddd
+    color #999
+

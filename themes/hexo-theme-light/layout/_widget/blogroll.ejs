@@ -1,0 +1,10 @@
+<% if (theme.blogrolls.length){ %>
+<div class="widget blogroll">
+  <h3 class="title"><%= __('blogroll') %></h3>
+  <ul class="entry">
+    <% for (var i in theme.blogrolls){ %>
+	<li><a href="<%- theme.blogrolls[i].url %>" title="<%- theme.blogrolls[i].introduce %>" target="_blank"]);"><%= theme.blogrolls[i].title %></a></li>
+    <% } %>
+  </ul>
+</div>
+<% } %>
