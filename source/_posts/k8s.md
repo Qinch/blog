@@ -13,6 +13,7 @@ toc: false
 
 ![虚拟机vs容器](/img/vmvscontainer.jpg)
 
+<!--more-->
 #### 1.2 容器技术和docker的关系
 
 - docker是容器技术的一个分支，rkt也是一个运行容器的平台，可以作为docker的替代方案。
@@ -26,7 +27,7 @@ toc: false
 - k8s是一个开源的，用于管理云平台中多个主机上的容器化的应用，Kubernetes的目标是让部署容器化的应用简单并且高效（powerful）,Kubernetes提供了应用部署，规划，更新，维护的一种机制。 
 
 
-一个简单的k8s系统如下图所示，由一个master node 和 任意数量的worker node. 当开发提交app 描述文件（比如描述运行多少个副本，暴露端口，指定的镜像，探活等）到master节点，然后k8s把app部署到worker nodes. 至于app部署到哪个woker node, 开发人员并不关心。
+一个简单的k8s系统如下图所示，由一个master node 和 任意数量的worker node. 当开发提交app 描述文件（比如描述运行多少个副本，暴露端口，指定的镜像，探活, 更新策略等）到master节点，然后k8s把app部署到worker nodes. 至于app部署到哪个woker node, 我们并不关心。
 
 ![k8s system](/img/k8s.jpg)
 
@@ -38,9 +39,9 @@ toc: false
 
 - docker是k8s最初唯一支持的容器类型，但是现在k8s也开始支持rkt以及其他的容器类型，不应该错误的认为k8s是一个专门为docker容器设计的容器编排系统。
 
-#### 1.4 为什么多个容器比单个容器中包含多个进程要好
+#### 1.5 为什么多个容器比单个容器中包含多个进程要好
 
-容器之所以被设计为单个容器只运行一个进行（除非进程本身产生子进程），是因为如果单个容器中运行多个不相关的进程，那么开发人员需要保持这些所有进程都运行OK, 并且管理他们的日志等（比如，多个进程中的某个进程crash之后，我们需要包含该进程重启的机制）。
+容器之所以被设计为单个容器只运行一个进行（除非进程本身产生子进程），是因为如果单个容器中运行多个不相关的进程，那么开发人员需要保持这些所有进程都运行OK, 并且管理他们的日志等（比如，两个进程，其中一个生产者进程，一个消费者进程，如果消费者进程crash之后，我们需要考虑该进程重启的机制）。
 
 ### 2, 创建一个docker镜像
 
@@ -70,10 +71,18 @@ ADD app.js /app.js
 ENTRYPOINT ["node", "app.js"]
 ```
 
+- `app.js`和`Dockerfile`的目录结构如下：
+```bash
+- image:
+  - app.js
+  - Dockerfile
+```
+
 - 创建一个名为`allen`的镜像
 
+ - `cd ./image`
  - `docker build -t allen .` 
- - ![创建一个新的镜像](/img/buildimage.jpeg)
+ ![创建一个新的镜像](/img/buildimage.jpeg)
 
 - 将该镜像推送到镜像仓库(docker hub)
 
@@ -87,11 +96,14 @@ ENTRYPOINT ["node", "app.js"]
 
  ![allen-container容器](/img/docker1.jpg)
 
+
+到此介绍了容器/k8s相关的基础知识，接下来详细介绍k8s中的相关概念。
+
 ### 2 Pods
 
 #### 2.1 为什么需要pod
 
-前边已经提到，容器被设计为每个进程只运行一个进程，那么多个进程就不能聚集在一个单独的容器（但是容器之间是彼此完全隔离的，多个进程分布在对应的多个容器中，进程之间无法做到资源共享）。所以我们需要一种更高级的结构来将容器绑定在一起，并且将它们作为一个单元进行管理，这就是为什么需要pod的根本原理。
+前边已经提到，容器被设计为每个容器只运行一个进程，那么多个进程就不能聚集在一个单独的容器，但是容器之间是彼此完全隔离的，多个进程分布在对应的多个容器中，进程之间无法做到资源共享（比如，前边提到到生产者/消费进程，他们通过共享内存和信号量来通信，但是如果生产者进程和消费者进程分布在两个容器中，则IPC是相互隔离的，导致无法通信）。所以我们需要一种更高级的结构来将容器绑定在一起，并且将它们作为一个单元进行管理(即：多个容器间共享某些资源)，这就是为什么需要pod的根本原理。
 
 #### 2.2 了解pod
 
@@ -167,21 +179,13 @@ spec:
 
 #### 5.1 为什么需要服务
 
-- pod是短暂的
+- pod是短暂的, 随时都可能被销毁。
 - 新的pod创建之前不能确定该pod分配的ip
-- 水平伸缩也就以为着多个pod可能提供相同的服务，客户端不想也不关系没个pod的ip, 相反，客户端通过一个单一的ip地址进行访问多个pod.
+- 水平伸缩也就以为着多个pod可能提供相同的服务，客户端不想也不关心每个pod的ip, 相反，客户端期望通过一个单一的ip地址进行访问多个pod.
 
-服务是一种为一组功能相同的pod提供单一不变的接入点的资源。当服务存在时，该服务的ip地址和端口不会改变。客户端通过ip和port与服务建立连接，然后这些连接会被路由到提供该服务的某个pod上(通过负载均衡)。
+服务是一种为一组功能相同的pod提供单一不变的接入点的资源。当服务存在时，该服务的ip地址和端口（创建服务的时候，通过ports[n].port和ports[n].targetPort 指定了服务端口到pod端口的映射）不会改变。客户端通过ip和port与服务建立连接，然后这些连接会被路由到提供该服务的某个pod上(通过负载均衡)。
 
-#### 5.2 服务发现
-
-在k8s集群内部，如果服务先创建，然后再创建客户端pod，那么客户端可以通过DNS发现之前创建的服务。 
-每个服务在k8s集群内部的DNS server中都会存在一个条目，客户端pod可以通过服务名称来访问服务（FQDN）。
-在前边的例子中，我们创建test-svc服务，则可以通过curl http://test-svc.default.svc.cluster.local来访问服务。
-![FQDN](/img/fqdn.png)
-
-
-#### 5.3 发现集群内部的服务
+#### 5.2 集群内部pod间通信
 
 服务的后端可能不止有一个pod, 服务通过标签选择器来指定哪些pod属于同一个组，然后连接到服务的客户端连接，服务会通过负载均衡路由到某个后端pod.
 
@@ -201,10 +205,42 @@ spec:
     app: testing
 ```
 
-然后登陆一个之前创建的dnsutils pod，然后在容器中执行nslookup testsvc
+同时创建一个ReplicaSet,其中容器运行我们的nodejs应用程序（前边创建的allen镜像）
+replicaset-fqdn.yaml, 该文件内容如下:
+
+```bash
+apiVersion: apps/v1
+kind: ReplicaSet
+metadata:
+ name: test-fqdn
+spec:
+ replicas: 3
+ selector:
+   matchLabels:
+    app: testing
+ template:
+   metadata:
+     labels:
+       app: testing
+   spec:
+     containers:
+     - name: nodejs
+       image: qinchaowhut/allen:v1
+```
+
+##### 5.2.1 服务发现
+
+在k8s集群内部，创建了服务之后，不需要查询服务的Cluster iP, 然后在把Cluster IP配置给客户端pod。
+客户端pod可以通过DNS发现之前创建的服务。 
+
+每个服务在k8s集群内部的DNS server中都会存在一个条目，客户端pod可以通过服务名称来访问服务（FQDN）。
+在前边的例子中，我们创建test-svc服务, 然后登录之前创建dnsutils pod中的容器， 可以通过通过nslookup查看test-svc.default.svc.cluster.local域名对应的ip(即test-svc的Cluster ip)
+`需要指出的是：` Cluseter IP是ping不通的，应为这个Cluseter IP一个虚拟IP, 只有与服务端口结合时才有意义。  
+
+由于都在同一明命名空间，我们可以在dnsutils容器中执行nslookup testsvc,查看服务的Cluster IP
 ![nslookup test-svc](/img/svc-test-nl.png)
 
-#### 5.4 将服务暴露给外部客户端
+#### 5.3 集群内部服务暴露给外部客户端
 
 ![集群外部客户端](/img/externalclient.png)
 
@@ -224,12 +260,12 @@ spec:
 LoadBalancer服务是NodePort服务的一种扩展。客户端通过一个专用的负载均衡器来访问服务（客户端通过负载均衡器的IP连接到服务）。其中负载均衡器将流量重定向到worker node的节点端口。
 ![LoadBalancer SVC](/img/loadbalancer.png)
 
-#### 5.5 pod连接集群外的服务
+#### 5.4 pod连接集群外的服务
 略
 
-#### 5.6 使用headless服务来发现独立的pod
+#### 5.5 使用headless服务来发现独立的pod
 
-headless服务，即在创建服务的spec中将cluseterIP字段设置为NONE。
+集群内部pod间也可以通过headless进行通信。headless服务，即在创建服务的spec中将cluseterIP字段设置为NONE。
 当通过DNS服务器查询headless服务名称的时候，DNS服务器返回的是所有pod IP,而不是单个服务的IP. 客户端pod可以通过这些IP连接到其中一个，多个或者全部的pod.
 
 ##### 5.6.1创建一个headless服务
@@ -252,7 +288,6 @@ spec:
 
 通过nslookup查询test-svc-headless服务
 ![nslookup headless svc](/img/svc-headless-test.png)
-
 
 ### 6 Deployment
 
@@ -317,7 +352,6 @@ spec:
 
 - run `kubectl create -f svc-loadbalancer.yaml`
 ![svc](/img/svc-loadbalancer.jpeg)
-
 
 - run `curl http://127.0.0.1:80`
 ![http response](/img/httpechov1.jpeg)
@@ -385,17 +419,18 @@ Deployment始终保持着升级后的版本历史记录，其中历史版本号�
 一旦确认新版本能够正常工作，就可以恢复滚动升级，用新版本pod替换所有旧版本的pod
 - `kubectl rollout resume deployment testqc`
 
+需要指出的是，在滚动升级过程中，想要在一个确切的位置暂停滚动升级目前无法做到。
+
 #### 6.6, 阻止出错版本的滚动升级
+
 minReadySeconds:指定新创建的pod至少要成功运行多久之后，才能将其视为可用。在pod尅用之前，滚动升级的过程不会继续。
 
-需要指出的是，在滚动升级过程中，想要在一个确切的位置暂停滚动升级目前无法做到。但是可以用两个不同的Deployment并同时调整他们的pod数量，来进行金丝雀发布。
-
-#### 附录
+#### 7，附录
 
 - YAML文件可以包含多种资源定义，YAML manifest可以使用包含三个横杠(---)的行来分隔多个对象。
 - 相关的yaml见 https://github.com/Qinch/k8s-in-action-test
 
-#### 参考资料
+#### 8，参考资料
 
 - 《k8s in action》
 - [Learn the Kubernetes Key Concepts in 10 Minutes](https://omerio.com/2015/12/18/learn-the-kubernetes-key-concepts-in-10-minutes/)
